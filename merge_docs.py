@@ -15,7 +15,7 @@ def get_unique_output_name(extension):
 
 def merge_pdfs(pdf_files):
     """Merge PDF files with a blank page separator."""
-    merger = pypdf.PdfMerger()
+    merger = pypdf.PdfWriter()
     
     # Create a blank page for separation
     blank_pdf = pypdf.PdfWriter()
@@ -26,12 +26,16 @@ def merge_pdfs(pdf_files):
     
     # Merge PDFs with separator
     for pdf_file in pdf_files:
-        merger.append(pdf_file)
-        merger.append(blank_path)  # Add separator
+        reader = pypdf.PdfReader(pdf_file)
+        for page in reader.pages:
+            merger.add_page(page)
+        # Add separator page
+        blank_reader = pypdf.PdfReader(blank_path)
+        merger.add_page(blank_reader.pages[0])
     
     output_name = get_unique_output_name(".pdf")
-    merger.write(output_name)
-    merger.close()
+    with open(output_name, "wb") as output_file:
+        merger.write(output_file)
     
     # Clean up temporary file
     os.remove(blank_path)
