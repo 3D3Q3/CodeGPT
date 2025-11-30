@@ -29,6 +29,9 @@ from __future__ import annotations
 import argparse
 import json
 import os
+import re
+import shutil
+from fnmatch import fnmatchcase
 import shutil
 from dataclasses import dataclass, asdict
 from datetime import datetime
@@ -199,11 +202,74 @@ def print_category_table(records: Sequence[FileRecord]) -> None:
             print(f"  [{idx}] {record.name}")
 
 
+def interactive_directory_prompt(title: str, start_path: Path | None = None) -> Path | None:
+    """Guide the user to pick a directory via simple navigation.
+
+    The user can type a full path (Windows or POSIX), pick a numbered entry,
+    go up a level, or select the current directory. Returns ``None`` if the
+    user enters an empty response.
+    """
+
+    try:
+        current = (start_path or Path.cwd()).expanduser().resolve()
+    except OSError:
+        current = Path.cwd()
+
+    while True:
+        print(f"\n{title}")
+        print(f"Current directory: {current}")
+
+        try:
+            entries = [p for p in sorted(current.iterdir()) if p.is_dir()]
+        except OSError as exc:
+            print(f"  Unable to list directories here ({exc}). Enter a path manually or go up.")
+            entries = []
+
+        for idx, entry in enumerate(entries, start=1):
+            print(f"  {idx}) {entry.name}")
+        print("  u) Go up one level")
+        print("  s) Select this directory")
+        print("  Enter a path to jump directly or press Enter to cancel")
+
+        choice = prompt_string("Choose an option: ")
+        if not choice:
+            return None
+        if choice.lower() == "u":
+            current = current.parent
+            continue
+        if choice.lower() == "s":
+            return current
+        if choice.isdigit():
+            index = int(choice)
+            if 1 <= index <= len(entries):
+                current = entries[index - 1]
+                continue
+            print("Invalid selection number.")
+            continue
+
+        candidate = Path(choice).expanduser()
+        if candidate.is_dir():
+            try:
+                current = candidate.resolve()
+            except OSError:
+                current = candidate
+        else:
+            print("Path not found or not a directory; please try again.")
+
+
 def prompt_string(message: str) -> str:
     try:
         return input(message).strip()
     except EOFError:
         return ""
+
+
+def prompt_yes_no(message: str, default_no: bool = True) -> bool:
+    suffix = " [y/N]: " if default_no else " [Y/n]: "
+    response = prompt_string(message + suffix).lower()
+    if not response:
+        return not default_no
+    return response in {"y", "yes"}
 
 
 def confirm_action(message: str, assume_yes: bool) -> bool:
@@ -212,12 +278,29 @@ def confirm_action(message: str, assume_yes: bool) -> bool:
     return prompt_confirmation(message)
 
 
+def match_pattern(name: str, pattern: str, use_regex: bool) -> bool:
+    if use_regex:
+        try:
+            return bool(re.search(pattern, name, flags=re.IGNORECASE))
+        except re.error:
+            print("  Invalid regex pattern; no matches applied.")
+            return False
+    normalized_pattern = pattern.lower()
+    return fnmatchcase(name.lower(), normalized_pattern)
+
+
 def organize_categories(records: Sequence[FileRecord], assume_yes: bool) -> List[FileRecord]:
     editable = list(records)
     if not editable:
         return editable
 
     print("\nReview stage: reorganize categories before any copying.")
+    print(
+        "You can rename categories, remove entries, move entries between categories, or delete categories."
+    )
+    print(
+        "Use option 5 for wildcard (e.g., *draft*) or regex (e.g., data_\\d+) bulk edits inside a category."
+    )
     print("You can rename categories, remove entries, move entries between categories, or delete categories.")
 
     while True:
@@ -228,6 +311,10 @@ def organize_categories(records: Sequence[FileRecord], assume_yes: bool) -> List
             "  2) Remove an entire category\n"
             "  3) Move a single entry to another category\n"
             "  4) Remove a single entry\n"
+            "  5) Bulk select by pattern (move/remove)\n"
+            "  6) Finish organization"
+        )
+        choice = prompt_string("Select an option [1-6]: ")
             "  5) Finish organization"
         )
         choice = prompt_string("Select an option [1-5]: ")
@@ -312,12 +399,69 @@ def organize_categories(records: Sequence[FileRecord], assume_yes: bool) -> List
             print(f"  Removed '{record.name}'.")
 
         elif choice == "5":
+            category = prompt_string("Enter the category to search within: ")
+            grouped = group_by_category(editable)
+            if category not in grouped:
+                print("  Category not found.")
+                continue
+            pattern = prompt_string(
+                "Enter a pattern (wildcards like *draft* or regex such as data_\\d+): "
+            )
+            if not pattern:
+                print("  No pattern provided.")
+                continue
+            use_regex = prompt_yes_no("Treat pattern as regex?", default_no=True)
+            matches = [
+                record for record in grouped[category]
+                if match_pattern(record.name, pattern, use_regex)
+            ]
+            if not matches:
+                print("  No entries matched that pattern.")
+                continue
+            print("\nMatched entries:")
+            for record in matches:
+                print(f"  - {record.name}")
+
+            action = prompt_string(
+                "Choose action for all matches: [move/remove/cancel]: "
+            ).lower()
+            if action not in {"move", "remove"}:
+                print("  Bulk action cancelled.")
+                continue
+
+            if action == "remove":
+                if not confirm_action(
+                    f"Remove {len(matches)} entries from '{category}'?", assume_yes
+                ):
+                    print("  Removal cancelled.")
+                    continue
+                editable = [r for r in editable if r not in matches]
+                print(f"  Removed {len(matches)} entr{'y' if len(matches)==1 else 'ies'}.")
+                continue
+
+            destination = prompt_string("Enter the destination category: ")
+            if not destination:
+                print("  No destination provided.")
+                continue
+            if not confirm_action(
+                f"Move {len(matches)} entries to '{destination}'?", assume_yes
+            ):
+                print("  Move cancelled.")
+                continue
+            for record in matches:
+                record.category = destination
+            print(
+                f"  Moved {len(matches)} entr{'y' if len(matches)==1 else 'ies'} to '{destination}'."
+            )
+
+        elif choice == "6":
             if not confirm_action("Finish organization and lock in the current list?", assume_yes):
                 print("  Continuing review stage.")
                 continue
             print("  Organization complete. Proceeding to copy stage inputs.")
             break
         else:
+            print("  Invalid option. Please choose 1-6.")
             print("  Invalid option. Please choose 1-5.")
 
     return editable
@@ -378,6 +522,15 @@ def export_results(
 
 
 def parse_args() -> argparse.Namespace:
+    parser = argparse.ArgumentParser(
+        description="Scan and export document library metadata with an interactive wizard."
+    )
+    parser.add_argument(
+        "root",
+        type=Path,
+        nargs="?",
+        help="Root directory to scan (prompted interactively if omitted).",
+    )
     parser = argparse.ArgumentParser(description="Scan and export document library metadata.")
     parser.add_argument("root", type=Path, help="Root directory to scan")
     parser.add_argument(
@@ -427,12 +580,26 @@ def parse_args() -> argparse.Namespace:
         type=Path,
         help="Path for copy log file (defaults to copy destination / copy_log.txt).",
     )
+    parser.add_argument(
+        "--interactive",
+        action="store_true",
+        help="Launch the guided wizard even when CLI arguments are provided.",
+    )
     return parser.parse_args()
 
 
 def prompt_for_copy_destination(provided: Path | None) -> Path | None:
     if provided:
         return provided
+
+    if not prompt_yes_no(
+        "Would you like to configure a copy destination now? (required for staged copies)",
+        default_no=True,
+    ):
+        return None
+
+    selection = interactive_directory_prompt("Select a destination folder for copied categories")
+    return selection
     try:
         response = input(
             "Optional: enter a copy destination directory for staged category copies (leave blank to skip): "
@@ -457,6 +624,14 @@ def ensure_directory(path: Path, assume_yes: bool) -> bool:
         return False
     path.mkdir(parents=True, exist_ok=True)
     return True
+
+
+def prompt_for_root_directory(provided: Path | None) -> Path | None:
+    if provided:
+        return provided
+    print("\nChoose the library folder to scan.")
+    selection = interactive_directory_prompt("Navigate to the top-level library directory")
+    return selection
 
 
 def dry_run_category_copy(category: str, records: Sequence[FileRecord], copy_dest: Path) -> None:
@@ -555,6 +730,30 @@ def staged_copy_workflow(
         print(f"  Completed copying category '{category}'.")
 
 
+def run_scan_pipeline(
+    root: Path,
+    include_ext: Set[str] | None,
+    exclude_ext: Set[str],
+    allow_media: bool,
+    output_json: Path | None,
+    output_text: Path | None,
+    apply_changes: bool,
+    assume_yes: bool,
+    copy_dest: Path | None,
+    copy_log: Path | None,
+) -> None:
+    if not root.exists():
+        print(f"Error: root path does not exist: {root}")
+        return
+    if not root.is_dir():
+        print(f"Error: root path is not a directory: {root}")
+        return
+
+    records = collect_candidates(
+        root=root,
+        include_ext=include_ext,
+        exclude_ext=exclude_ext,
+        skip_media=not allow_media,
 def main() -> None:
     args = parse_args()
 
@@ -584,6 +783,10 @@ def main() -> None:
 
     export_results(
         records=deduped_records,
+        json_path=output_json,
+        text_path=output_text,
+        apply_changes=apply_changes,
+        assume_yes=assume_yes,
         json_path=args.output_json,
         text_path=args.output_text,
         apply_changes=args.apply,
@@ -593,6 +796,9 @@ def main() -> None:
     organized_records = deduped_records
     if deduped_records:
         if confirm_action(
+            "Enter category organization stage before copying?", assume_yes=assume_yes
+        ):
+            organized_records = organize_categories(deduped_records, assume_yes=assume_yes)
             "Enter category organization stage before copying?", assume_yes=args.yes
         ):
             organized_records = organize_categories(deduped_records, assume_yes=args.yes)
@@ -601,6 +807,98 @@ def main() -> None:
 
     staged_copy_workflow(
         records=organized_records,
+        copy_dest=copy_dest,
+        assume_yes=assume_yes,
+        log_path=copy_log,
+    )
+
+
+def interactive_wizard(args: argparse.Namespace) -> None:
+    print(
+        "\nInteractive mode: follow the prompts to scan, organize, and optionally copy your library."
+    )
+
+    copy_destination = prompt_for_copy_destination(args.copy_dest)
+    root = prompt_for_root_directory(args.root)
+    if root is None:
+        print("No root directory selected. Exiting.")
+        return
+
+    include_ext: Set[str] | None = None
+    if prompt_yes_no(
+        "Customize which extensions to include? (otherwise defaults are used)", default_no=True
+    ):
+        print(
+            "Enter extensions separated by spaces (e.g., .pdf .epub .docx). Leave blank to keep defaults."
+        )
+        raw = prompt_string("Extensions: ")
+        include_ext = set(raw.split()) if raw else None
+
+    exclude_ext: Set[str] = set()
+    if prompt_yes_no("Exclude any extensions?", default_no=True):
+        raw = prompt_string("Enter extensions to exclude (space-separated): ")
+        exclude_ext = set(raw.split()) if raw else set()
+
+    allow_media = prompt_yes_no("Include audio/video files?", default_no=True)
+
+    output_json: Path | None = None
+    output_text: Path | None = None
+    if prompt_yes_no("Write results to disk after preview?", default_no=True):
+        if prompt_yes_no("Save JSON output?", default_no=False):
+            json_path = prompt_string("Enter JSON output path (default: scan_results.json): ")
+            output_json = Path(json_path or "scan_results.json")
+        if prompt_yes_no("Save structured text output?", default_no=False):
+            text_path = prompt_string("Enter text output path (default: scan_results.txt): ")
+            output_text = Path(text_path or "scan_results.txt")
+
+    apply_changes = False
+    if output_json or output_text:
+        apply_changes = prompt_yes_no(
+            "After previewing, allow writing these output files?", default_no=False
+        )
+
+    if copy_destination is None:
+        print(
+            "Copy destination was not provided; the staged copy workflow will be skipped unless you rerun and choose one."
+        )
+
+    run_scan_pipeline(
+        root=root,
+        include_ext=include_ext,
+        exclude_ext=exclude_ext,
+        allow_media=allow_media,
+        output_json=output_json,
+        output_text=output_text,
+        apply_changes=apply_changes,
+        assume_yes=False,
+        copy_dest=copy_destination,
+        copy_log=args.copy_log,
+    )
+
+
+def main() -> None:
+    args = parse_args()
+
+    if args.interactive or args.root is None:
+        interactive_wizard(args)
+        return
+
+    copy_destination = prompt_for_copy_destination(args.copy_dest)
+
+    include_ext = set(args.include_ext) if args.include_ext else None
+    exclude_ext = set(args.exclude_ext)
+
+    run_scan_pipeline(
+        root=args.root,
+        include_ext=include_ext,
+        exclude_ext=exclude_ext,
+        allow_media=args.allow_media,
+        output_json=args.output_json,
+        output_text=args.output_text,
+        apply_changes=args.apply,
+        assume_yes=args.yes,
+        copy_dest=copy_destination,
+        copy_log=args.copy_log,
         copy_dest=copy_destination,
         assume_yes=args.yes,
         log_path=args.copy_log,
