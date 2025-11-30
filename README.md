@@ -85,6 +85,11 @@ python library_scanner.py /path/to/root \
    remove them. Every change asks for confirmation and only affects the
    in-memory list (no files are touched). Finishing this step “locks in” the
    list that will be used for copying.
+2. After scanning and previewing results, the CLI offers an organization stage.
+   You can rename categories, delete categories, move individual entries to
+   different categories, or remove entries entirely. Every change asks for
+   confirmation and only affects the in-memory list (no files are touched).
+   Finishing this step “locks in” the list that will be used for copying.
 3. The CLI then offers to begin the staged copy. For each category it first
    performs a dry-run preview that lists every planned copy into a category-
    named folder inside the destination.
