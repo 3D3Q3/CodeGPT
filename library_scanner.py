@@ -1,4 +1,4 @@
-"""CLI tool for scanning and exporting library-style document inventories.
+""""CLI tool for scanning and exporting library-style document inventories.
 
 Usage examples:
     python library_scanner.py /path/to/library \
@@ -21,8 +21,7 @@ Key behaviors:
   name/size fingerprint to avoid repeats.
 - Produces two structured views: a concise categorized list by inferred type
   and a detailed list with absolute paths and metadata.
-- Supports exporting results to JSON or structured text for downstream tools
-  (e.g., LLM ingestion pipelines).
+- Supports exporting results to JSON or structured text for downstream tools.
 """
 from __future__ import annotations
 
@@ -32,7 +31,6 @@ import os
 import re
 import shutil
 from fnmatch import fnmatchcase
-import shutil
 from dataclasses import dataclass, asdict
 from datetime import datetime
 from pathlib import Path
@@ -202,14 +200,15 @@ def print_category_table(records: Sequence[FileRecord]) -> None:
             print(f"  [{idx}] {record.name}")
 
 
+def prompt_string(message: str) -> str:
+    try:
+        return input(message).strip()
+    except EOFError:
+        return ""
+
+
 def interactive_directory_prompt(title: str, start_path: Path | None = None) -> Path | None:
-    """Guide the user to pick a directory via simple navigation.
-
-    The user can type a full path (Windows or POSIX), pick a numbered entry,
-    go up a level, or select the current directory. Returns ``None`` if the
-    user enters an empty response.
-    """
-
+    """Guide the user to pick a directory via simple navigation."""
     try:
         current = (start_path or Path.cwd()).expanduser().resolve()
     except OSError:
@@ -257,13 +256,6 @@ def interactive_directory_prompt(title: str, start_path: Path | None = None) -> 
             print("Path not found or not a directory; please try again.")
 
 
-def prompt_string(message: str) -> str:
-    try:
-        return input(message).strip()
-    except EOFError:
-        return ""
-
-
 def prompt_yes_no(message: str, default_no: bool = True) -> bool:
     suffix = " [y/N]: " if default_no else " [Y/n]: "
     response = prompt_string(message + suffix).lower()
@@ -276,6 +268,14 @@ def confirm_action(message: str, assume_yes: bool) -> bool:
     if assume_yes:
         return True
     return prompt_confirmation(message)
+
+
+def prompt_confirmation(message: str) -> bool:
+    try:
+        response = input(f"{message} [y/N]: ").strip().lower()
+    except EOFError:
+        return False
+    return response in {"y", "yes"}
 
 
 def match_pattern(name: str, pattern: str, use_regex: bool) -> bool:
@@ -301,7 +301,6 @@ def organize_categories(records: Sequence[FileRecord], assume_yes: bool) -> List
     print(
         "Use option 5 for wildcard (e.g., *draft*) or regex (e.g., data_\\d+) bulk edits inside a category."
     )
-    print("You can rename categories, remove entries, move entries between categories, or delete categories.")
 
     while True:
         print_category_table(editable)
@@ -314,10 +313,8 @@ def organize_categories(records: Sequence[FileRecord], assume_yes: bool) -> List
             "  5) Bulk select by pattern (move/remove)\n"
             "  6) Finish organization"
         )
+        
         choice = prompt_string("Select an option [1-6]: ")
-            "  5) Finish organization"
-        )
-        choice = prompt_string("Select an option [1-5]: ")
 
         if choice == "1":
             current = prompt_string("Enter the category to rename: ")
@@ -462,17 +459,8 @@ def organize_categories(records: Sequence[FileRecord], assume_yes: bool) -> List
             break
         else:
             print("  Invalid option. Please choose 1-6.")
-            print("  Invalid option. Please choose 1-5.")
 
     return editable
-
-
-def prompt_confirmation(message: str) -> bool:
-    try:
-        response = input(f"{message} [y/N]: ").strip().lower()
-    except EOFError:
-        return False
-    return response in {"y", "yes"}
 
 
 def export_results(
@@ -531,8 +519,6 @@ def parse_args() -> argparse.Namespace:
         nargs="?",
         help="Root directory to scan (prompted interactively if omitted).",
     )
-    parser = argparse.ArgumentParser(description="Scan and export document library metadata.")
-    parser.add_argument("root", type=Path, help="Root directory to scan")
     parser.add_argument(
         "--include-ext",
         nargs="*",
@@ -600,15 +586,6 @@ def prompt_for_copy_destination(provided: Path | None) -> Path | None:
 
     selection = interactive_directory_prompt("Select a destination folder for copied categories")
     return selection
-    try:
-        response = input(
-            "Optional: enter a copy destination directory for staged category copies (leave blank to skip): "
-        ).strip()
-    except EOFError:
-        return None
-    if not response:
-        return None
-    return Path(response).expanduser()
 
 
 def ensure_directory(path: Path, assume_yes: bool) -> bool:
@@ -754,26 +731,6 @@ def run_scan_pipeline(
         include_ext=include_ext,
         exclude_ext=exclude_ext,
         skip_media=not allow_media,
-def main() -> None:
-    args = parse_args()
-
-    copy_destination = prompt_for_copy_destination(args.copy_dest)
-
-    if not args.root.exists():
-        print(f"Error: root path does not exist: {args.root}")
-        return
-    if not args.root.is_dir():
-        print(f"Error: root path is not a directory: {args.root}")
-        return
-
-    include_ext = set(args.include_ext) if args.include_ext else None
-    exclude_ext = set(args.exclude_ext)
-
-    records = collect_candidates(
-        root=args.root,
-        include_ext=include_ext,
-        exclude_ext=exclude_ext,
-        skip_media=not args.allow_media,
     )
     deduped_records = deduplicate(records)
 
@@ -787,10 +744,6 @@ def main() -> None:
         text_path=output_text,
         apply_changes=apply_changes,
         assume_yes=assume_yes,
-        json_path=args.output_json,
-        text_path=args.output_text,
-        apply_changes=args.apply,
-        assume_yes=args.yes,
     )
 
     organized_records = deduped_records
@@ -799,9 +752,6 @@ def main() -> None:
             "Enter category organization stage before copying?", assume_yes=assume_yes
         ):
             organized_records = organize_categories(deduped_records, assume_yes=assume_yes)
-            "Enter category organization stage before copying?", assume_yes=args.yes
-        ):
-            organized_records = organize_categories(deduped_records, assume_yes=args.yes)
         else:
             print("Skipping organization stage; using current categories as-is.")
 
@@ -899,9 +849,6 @@ def main() -> None:
         assume_yes=args.yes,
         copy_dest=copy_destination,
         copy_log=args.copy_log,
-        copy_dest=copy_destination,
-        assume_yes=args.yes,
-        log_path=args.copy_log,
     )
 
 
